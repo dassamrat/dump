@@ -1,48 +1,11 @@
-import requests
-import base64
-import json
-import csv
-
-WIZ_CLIENT_ID = "YOUR_CLIENT_ID"
-WIZ_CLIENT_SECRET = "YOUR_CLIENT_SECRET"
-WIZ_AUDIENCE = "api"
-WIZ_ENV = "prod"
-WIZ_AUTH_URL = "https://auth.app.wiz.io/oauth/token"
-
-def get_access_token():
-    payload = {
-        "client_id": WIZ_CLIENT_ID,
-        "client_secret": WIZ_CLIENT_SECRET,
-        "audience": WIZ_AUDIENCE,
-        "grant_type": "client_credentials"
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    resp = requests.post(WIZ_AUTH_URL, data=payload, headers=headers)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-def extract_dc_from_token(token):
-    payload_part = token.split(".")[1]
-    padded = payload_part + "=" * (-len(payload_part) % 4)
-    decoded_bytes = base64.urlsafe_b64decode(padded)
-    claims = json.loads(decoded_bytes)
-    return claims.get("dc", "unknown")
-
-def get_api_url(dc):
-    return f"https://api.{dc}.app.wiz.io/graphql"
-
-def run_graphql_query(token, api_url, query, variables=None):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    body = {"query": query, "variables": variables or {}}
-    response = requests.post(api_url, json=body, headers=headers)
-    response.raise_for_status()
-    return response.json()
-
 def flatten_connector(conn):
-    # Handles nested fields (flatten only basic structure)
+    # Sum counts from connectorIssues list or 0 if None
+    issues = conn.get("connectorIssues")
+    if issues is None:
+        issues_count = 0
+    else:
+        issues_count = sum(item.get("count", 0) for item in issues)
+
     return {
         "id": conn.get("id"),
         "name": conn.get("name"),
@@ -55,43 +18,5 @@ def flatten_connector(conn):
         "createdAt": conn.get("createdAt"),
         "addedBy_name": conn.get("addedBy", {}).get("name"),
         "addedBy_email": conn.get("addedBy", {}).get("email"),
-        "connectorIssues_count": conn.get("connectorIssues", {}).get("count")
+        "connectorIssues_count": issues_count
     }
-
-if __name__ == "__main__":
-    token = get_access_token()
-    dc = extract_dc_from_token(token)
-    api_url = get_api_url(dc)
-
-    connectors_query = """
-    query Connectors($first: Int) {
-      connectors(first: $first) {
-        nodes {
-          id
-          name
-          type { id name }
-          enabled
-          status
-          errorCode
-          lastActivity
-          createdAt
-          addedBy { name email }
-          connectorIssues { count }
-        }
-      }
-    }
-    """
-
-    result = run_graphql_query(token, api_url, connectors_query, {"first": 100})
-    nodes = result.get("data", {}).get("connectors", {}).get("nodes", [])
-
-    # Flatten connector dicts for CSV
-    rows = [flatten_connector(conn) for conn in nodes]
-
-    # Write to CSV
-    with open("connectors.csv", "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows.keys())
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"Wrote {len(rows)} connectors to connectors.csv")
