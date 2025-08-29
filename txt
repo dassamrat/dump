@@ -20,3 +20,12 @@ def flatten_connector(conn):
         "addedBy_email": conn.get("addedBy", {}).get("email"),
         "connectorIssues_count": issues_count
     }
+
+
+    if rows:
+        with open("connectors.csv", "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    print(f"Wrote {len(rows)} connectors to connectors.csv")
