@@ -1,19 +1,13 @@
 import requests
-import csv
 import base64
 import json
+import csv
 
-# Environment variables - replace with your actual values
 WIZ_CLIENT_ID = "YOUR_CLIENT_ID"
 WIZ_CLIENT_SECRET = "YOUR_CLIENT_SECRET"
-WIZ_AUDIENCE = "api"  # Confirm if different
-WIZ_ENV = "prod"  # Only support prod environment now
-
-# Auth URL for prod environment only
+WIZ_AUDIENCE = "api"
+WIZ_ENV = "prod"
 WIZ_AUTH_URL = "https://auth.app.wiz.io/oauth/token"
-
-# API subdomain for prod only
-WIZ_API_SUBDOMAIN = "app.wiz.io"
 
 def get_access_token():
     payload = {
@@ -22,50 +16,53 @@ def get_access_token():
         "audience": WIZ_AUDIENCE,
         "grant_type": "client_credentials"
     }
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    response = requests.post(WIZ_AUTH_URL, data=payload, headers=headers)
-    response.raise_for_status()
-    token = response.json()["access_token"]
-    return token
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    resp = requests.post(WIZ_AUTH_URL, data=payload, headers=headers)
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
 def extract_dc_from_token(token):
-    # Decode JWT token payload to extract 'dc' field
-    payload_part = token.split('.')[1]
-    padded = payload_part + '=' * (-len(payload_part) % 4)  # Pad base64 string
+    payload_part = token.split(".")[1]
+    padded = payload_part + "=" * (-len(payload_part) % 4)
     decoded_bytes = base64.urlsafe_b64decode(padded)
     claims = json.loads(decoded_bytes)
     return claims.get("dc", "unknown")
 
-def get_wiz_api_url(dc):
-    return f"https://api.{dc}.{WIZ_API_SUBDOMAIN}/graphql"
+def get_api_url(dc):
+    return f"https://api.{dc}.app.wiz.io/graphql"
 
 def run_graphql_query(token, api_url, query, variables=None):
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-    body = {
-        "query": query,
-        "variables": variables or {}
-    }
+    body = {"query": query, "variables": variables or {}}
     response = requests.post(api_url, json=body, headers=headers)
     response.raise_for_status()
     return response.json()
 
-def write_csv(filename, data, headers):
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        writer.writeheader()
-        writer.writerows(data)
+def flatten_connector(conn):
+    # Handles nested fields (flatten only basic structure)
+    return {
+        "id": conn.get("id"),
+        "name": conn.get("name"),
+        "type_id": conn.get("type", {}).get("id"),
+        "type_name": conn.get("type", {}).get("name"),
+        "enabled": conn.get("enabled"),
+        "status": conn.get("status"),
+        "errorCode": conn.get("errorCode"),
+        "lastActivity": conn.get("lastActivity"),
+        "createdAt": conn.get("createdAt"),
+        "addedBy_name": conn.get("addedBy", {}).get("name"),
+        "addedBy_email": conn.get("addedBy", {}).get("email"),
+        "connectorIssues_count": conn.get("connectorIssues", {}).get("count")
+    }
 
 if __name__ == "__main__":
     token = get_access_token()
     dc = extract_dc_from_token(token)
-    api_url = get_wiz_api_url(dc)
+    api_url = get_api_url(dc)
 
-    # Query connectors (example query - adjust as needed)
     connectors_query = """
     query Connectors($first: Int) {
       connectors(first: $first) {
@@ -84,27 +81,17 @@ if __name__ == "__main__":
       }
     }
     """
-    connectors_result = run_graphql_query(token, api_url, connectors_query, {"first": 500})
-    connector_nodes = connectors_result.get("data", {}).get("connectors", {}).get("nodes", [])
-    
-    connector_data = []
-    for c in connector_nodes:
-        connector_data.append({
-            "id": c.get("id"),
-            "name": c.get("name"),
-            "type_id": c.get("type", {}).get("id"),
-            "type_name": c.get("type", {}).get("name"),
-            "enabled": c.get("enabled"),
-            "status": c.get("status"),
-            "errorCode": c.get("errorCode"),
-            "lastActivity": c.get("lastActivity"),
-            "createdAt": c.get("createdAt"),
-            "addedBy_name": c.get("addedBy", {}).get("name"),
-            "addedBy_email": c.get("addedBy", {}).get("email"),
-            "connectorIssues_count": c.get("connectorIssues", {}).get("count"),
-            "dc": dc
-        })
-    write_csv("connector_status.csv", connector_data, connector_data[0].keys() if connector_data else [])
 
-    print("Connector data written to connector_status.csv")
+    result = run_graphql_query(token, api_url, connectors_query, {"first": 100})
+    nodes = result.get("data", {}).get("connectors", {}).get("nodes", [])
 
+    # Flatten connector dicts for CSV
+    rows = [flatten_connector(conn) for conn in nodes]
+
+    # Write to CSV
+    with open("connectors.csv", "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows.keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Wrote {len(rows)} connectors to connectors.csv")
