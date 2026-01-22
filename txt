@@ -1,1 +1,50 @@
+#!/bin/bash
+# GCP VM: Dynamic Route for NIC1 Only (NIC0 default preserved)
+# Run with sudo
+
+set -e
+
+METADATA_URL="http://metadata.google.internal/computeMetadata/v1"
+FLAVOR="-H 'Metadata-Flavor: Google'"
+
+# Get number of NICs
+NIC_COUNT=$(curl -s $FLAVOR "$METADATA_URL/instance/network-interfaces/")
+NIC1_INDEX=1  # NIC1 is index 1
+
+if [ "$NIC_COUNT" -lt 2 ]; then
+  echo "No NIC1 found. Exiting."
+  exit 0
+fi
+
+# Fetch NIC1 info
+NIC1_INFO=$(curl -s $FLAVOR "$METADATA_URL/instance/network-interfaces/$NIC1_INDEX/")
+NIC1_NAME=$(echo $NIC1_INFO | jq -r .name)  # e.g., nic1
+NIC1_IP=$(echo $NIC1_INFO | jq -r .networkIP)
+NIC1_GW=$(echo $NIC1_INFO | jq -r .gateway)  # Dynamic gateway IP [page:0]
+
+# Map GCP nic name to Linux interface (common pattern)
+IF_NAME=$(ip link show | grep -o "en[^:]*\|eth[^:]*" | xargs -I {} sh -c 'ip addr show {} 2>/dev/null | grep -q "$1" && echo {}' "$NIC1_IP" | head -1)
+[ -z "$IF_NAME" ] && IF_NAME=$(ip -o link | awk -v ip="$NIC1_IP" '$0 ~ ip {print $2; exit}' | sed 's/:$//')
+
+if [ -z "$IF_NAME" ]; then
+  echo "NIC1 interface not found for IP $NIC1_IP"
+  exit 1
+fi
+
+SECONDARY_TABLE="secondary_nic1"
+ip route flush table $SECONDARY_TABLE 2>/dev/null || true
+
+# Add connected/default to NIC1 table
+ip route add default dev $IF_NAME table $SECONDARY_TABLE
+ip route replace default via $NIC1_GW dev $IF_NAME table $SECONDARY_TABLE metric 100
+
+# Policy rule for NIC1 sources (higher priority after main/NIC0)
+ip rule add from $NIC1_IP/32 lookup $SECONDARY_TABLE pri 50
+
+echo "99 $SECONDARY_TABLE" >> /etc/iproute2/rt_tables
+
+echo "NIC1 Route Added:"
+echo "  Interface: $IF_NAME ($NIC1_NAME)"
+echo "  IP: $NIC1_IP | GW: $NIC1_GW"
+echo "  Table: $SECONDARY_TABLE | Verify: ip route show table $SECONDARY_TABLE && ip rule show [page:0][web:38]"
 
